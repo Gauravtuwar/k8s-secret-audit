@@ -1,29 +1,45 @@
 'use client';
 
 import React from 'react';
-import { Info, Sparkles, Server } from 'lucide-react';
+import { Sparkles, Server, ShieldCheck } from 'lucide-react';
 import { useAuth } from '@/lib/auth-context';
 import { Badge } from '@/components/ui/badge';
+import { useToast } from '@/components/ui/toast';
 
 export function DemoBanner() {
   const { isDemoMode, setIsDemoMode } = useAuth();
+  const { toast } = useToast();
+
+  const handleToggle = () => {
+    const nextVal = !isDemoMode;
+    setIsDemoMode(nextVal);
+    toast(
+      nextVal ? 'Demo Mode Activated' : 'Real Cluster Mode Activated',
+      nextVal ? 'Displaying synthetic cluster simulation & findings.' : 'Connected to live Kubernetes cluster API.',
+      nextVal ? 'info' : 'success'
+    );
+  };
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-amber-500/10 px-6 py-2.5 text-xs font-medium text-amber-500 dark:bg-amber-950/40 dark:text-amber-400">
-      <div className="flex items-center gap-2">
-        <Sparkles className="h-4 w-4 text-amber-500 animate-pulse" />
-        <span className="font-semibold uppercase tracking-wider">Demo Environment</span>
-        <span className="hidden sm:inline text-amber-600 dark:text-amber-300">
-          — Displaying synthetic Kubernetes cluster metadata & security rule simulations. No real secrets modified.
+    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-500/30 bg-amber-950/40 px-6 py-2.5 text-xs font-semibold text-amber-300 backdrop-blur-md">
+      <div className="flex items-center gap-2.5">
+        <div className="flex h-5 w-5 items-center justify-center rounded-full bg-amber-500/20 text-amber-400">
+          <Sparkles className="h-3.5 w-3.5 animate-pulse" />
+        </div>
+        <span className="font-extrabold uppercase tracking-wider text-amber-400">Demo Environment Active</span>
+        <span className="hidden md:inline text-slate-300 text-[11px] font-normal">
+          — Displaying synthetic Kubernetes cluster metadata & security rule simulations. No live cluster modified.
         </span>
       </div>
+
       <div className="flex items-center gap-3">
-        <Badge variant={isDemoMode ? 'warning' : 'outline'} className="text-[10px] uppercase">
+        <Badge variant={isDemoMode ? 'warning' : 'outline'} className="text-[10px] uppercase font-bold tracking-wider">
           {isDemoMode ? 'Synthetic Data Mode' : 'Real Cluster Mode'}
         </Badge>
+
         <button
-          onClick={() => setIsDemoMode(!isDemoMode)}
-          className="rounded border border-amber-500/30 bg-amber-500/20 px-2.5 py-1 text-[11px] font-semibold text-amber-400 hover:bg-amber-500/30 transition-colors"
+          onClick={handleToggle}
+          className="rounded-lg border border-amber-500/40 bg-amber-500/20 px-3 py-1 text-[11px] font-bold text-amber-300 hover:bg-amber-500/30 hover:border-amber-400 transition-all shadow-[0_0_10px_rgba(245,158,11,0.15)]"
         >
           {isDemoMode ? 'Switch to Real Audit Mode' : 'Enable Demo Mode'}
         </button>
