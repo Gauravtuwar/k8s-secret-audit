@@ -1,21 +1,60 @@
-export function getApiBaseUrl(): string {
-  let url = process.env.NEXT_PUBLIC_API_URL;
-  if (!url) {
-    if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-      return '/api/v1';
-    }
-    return 'http://localhost:8000/api/v1';
-  }
-
-  // Strip trailing slashes
-  url = url.replace(/\/+$/, '');
-
-  // Normalize /api/v1 suffix
+export function normalizeApiUrl(rawUrl: string): string {
+  if (!rawUrl) return '';
+  let url = rawUrl.trim().replace(/\/+$/, '');
   if (!url.endsWith('/api/v1')) {
     url = `${url}/api/v1`;
   }
-
   return url;
+}
+
+export function getBackendUrl(): string {
+  if (typeof window !== 'undefined') {
+    const custom = localStorage.getItem('sentinel_backend_url');
+    if (custom) return custom;
+  }
+  return process.env.NEXT_PUBLIC_API_URL || '';
+}
+
+export function setBackendUrl(url: string): void {
+  if (typeof window !== 'undefined') {
+    if (!url || !url.trim()) {
+      localStorage.removeItem('sentinel_backend_url');
+    } else {
+      localStorage.setItem('sentinel_backend_url', url.trim());
+    }
+  }
+}
+
+export function getApiBaseUrl(): string {
+  // 1. Check runtime override stored in browser localStorage
+  if (typeof window !== 'undefined') {
+    const customUrl = localStorage.getItem('sentinel_backend_url');
+    if (customUrl && customUrl.trim()) {
+      return normalizeApiUrl(customUrl);
+    }
+  }
+
+  // 2. Check build-time environment variable
+  const envUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (envUrl && envUrl.trim()) {
+    return normalizeApiUrl(envUrl);
+  }
+
+  // 3. In browser on localhost or 127.0.0.1, fallback to local FastAPI server
+  if (typeof window !== 'undefined') {
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      return 'http://localhost:8000/api/v1';
+    }
+    // Remote domain (e.g. Vercel) without configured backend URL
+    return '';
+  }
+
+  // Server-side default
+  return process.env.NODE_ENV === 'production' ? '' : 'http://localhost:8000/api/v1';
+}
+
+export function isBackendConfigured(): boolean {
+  return Boolean(getApiBaseUrl());
 }
 
 export class ApiError extends Error {
@@ -31,6 +70,14 @@ export class ApiError extends Error {
 
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const baseUrl = getApiBaseUrl();
+  if (!baseUrl) {
+    throw new ApiError(
+      'Render Backend API URL is not configured. Please set NEXT_PUBLIC_API_URL in Vercel or enter your Render backend URL below.',
+      0,
+      { code: 'BACKEND_NOT_CONFIGURED' }
+    );
+  }
+
   const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null;
 
   const headers: Record<string, string> = {
@@ -45,17 +92,29 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
 
   let response: Response;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+
   try {
     response = await fetch(`${baseUrl}${cleanEndpoint}`, {
       ...options,
+      signal: options.signal || controller.signal,
       headers,
     });
   } catch (netErr: any) {
+    if (netErr?.name === 'AbortError') {
+      throw new ApiError(
+        'Backend connection timed out after 15s. The Render service may be waking up from sleep. Please wait a moment and click Retry.',
+        408
+      );
+    }
     throw new ApiError(
-      'Unable to connect to the Security Audit API. Verify backend service status and CORS configuration.',
+      `Unable to reach backend API at ${baseUrl}. Verify Render deployment status and CORS configuration. (${netErr?.message || 'NetworkError'})`,
       0,
       { originalError: netErr?.message }
     );
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   if (!response.ok) {
@@ -63,9 +122,28 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     try {
       errorData = await response.json();
     } catch (e) {
-      errorData = { detail: response.statusText || 'API request failed' };
+      errorData = { detail: response.statusText || `HTTP ${response.status} Error` };
     }
-    throw new ApiError(errorData.detail || 'API request failed', response.status, errorData);
+
+    const detailMsg = typeof errorData.detail === 'string' ? errorData.detail : JSON.stringify(errorData.detail || errorData);
+
+    switch (response.status) {
+      case 401:
+        throw new ApiError(detailMsg || 'Unauthorized: Invalid or expired token.', 401, errorData);
+      case 403:
+        throw new ApiError(detailMsg || 'Forbidden: Access denied to this resource.', 403, errorData);
+      case 404:
+        throw new ApiError(detailMsg || 'Resource not found on backend.', 404, errorData);
+      case 422:
+        throw new ApiError(detailMsg || 'Validation Error: Check input format.', 422, errorData);
+      case 500:
+      case 502:
+      case 503:
+      case 504:
+        throw new ApiError(detailMsg || `Backend service error (HTTP ${response.status}). Check Render logs.`, response.status, errorData);
+      default:
+        throw new ApiError(detailMsg || `API request failed (HTTP ${response.status})`, response.status, errorData);
+    }
   }
 
   // If response is file download (Blob)
@@ -78,9 +156,29 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 
 export const api = {
   // Health
-  checkHealth: () => {
-    const base = getApiBaseUrl().replace(/\/api\/v1$/, '');
-    return fetch(`${base}/health`).then((res) => res.json());
+  checkHealth: async (customBaseUrl?: string) => {
+    let base = customBaseUrl ? normalizeApiUrl(customBaseUrl) : getApiBaseUrl();
+    if (!base) {
+      throw new ApiError('No backend URL provided for health check.', 0);
+    }
+    const rootBase = base.replace(/\/api\/v1\/?$/, '');
+    const res = await fetch(`${rootBase}/health`);
+    if (!res.ok) {
+      throw new ApiError(`Health check returned HTTP ${res.status}`, res.status);
+    }
+    return res.json();
+  },
+  checkLiveness: async (customBaseUrl?: string) => {
+    let base = customBaseUrl ? normalizeApiUrl(customBaseUrl) : getApiBaseUrl();
+    if (!base) {
+      throw new ApiError('No backend URL provided for liveness check.', 0);
+    }
+    const rootBase = base.replace(/\/api\/v1\/?$/, '');
+    const res = await fetch(`${rootBase}/health/live`);
+    if (!res.ok) {
+      throw new ApiError(`Liveness check returned HTTP ${res.status}`, res.status);
+    }
+    return res.json();
   },
 
   // Auth

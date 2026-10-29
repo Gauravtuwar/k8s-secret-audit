@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { api } from '@/lib/api-client';
+import { api, getApiBaseUrl, getBackendUrl, setBackendUrl, isBackendConfigured } from '@/lib/api-client';
 import { DashboardSummary } from '@/types';
 import { StatCard } from '@/components/dashboard/stat-card';
 import { AuditCharts } from '@/components/dashboard/audit-charts';
@@ -31,8 +31,67 @@ import {
   AlertCircle,
   ShieldCheck,
   ChevronRight,
-  Activity
+  Activity,
+  RotateCw,
+  Globe,
+  Sparkles
 } from 'lucide-react';
+
+const DEMO_FALLBACK_SUMMARY: DashboardSummary = {
+  total_clusters: 1,
+  total_secrets_audited: 42,
+  critical_findings: 3,
+  high_findings: 7,
+  medium_findings: 5,
+  low_findings: 2,
+  encryption_status_summary: {
+    PASS: 1,
+    FAIL: 2,
+    WARNING: 1
+  },
+  last_audit_at: new Date().toISOString(),
+  security_score: 82.5,
+  previous_score: 79.0,
+  score_change: 3.5,
+  severity_breakdown: {
+    Critical: 3,
+    High: 7,
+    Medium: 5,
+    Low: 2,
+    Informational: 4
+  },
+  score_history: [
+    { date: '2026-10-23', score: 71.0 },
+    { date: '2026-10-25', score: 75.5 },
+    { date: '2026-10-27', score: 79.0 },
+    { date: '2026-10-29', score: 82.5 }
+  ],
+  namespace_breakdown: [
+    { namespace: 'kube-system', findings_count: 8 },
+    { namespace: 'production', findings_count: 6 },
+    { namespace: 'staging', findings_count: 2 },
+    { namespace: 'default', findings_count: 1 }
+  ],
+  recent_audits: [
+    {
+      id: 'demo-audit-001',
+      user_id: 'demo-user',
+      cluster_id: 'demo-cluster-prod',
+      started_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+      status: 'completed',
+      current_step: 'Completed',
+      security_score: 82.5,
+      critical_count: 3,
+      high_count: 7,
+      medium_count: 5,
+      low_count: 2,
+      informational_count: 4,
+      total_secrets_audited: 42,
+      is_demo: true
+    }
+  ]
+};
 
 export default function DashboardPage() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
@@ -40,6 +99,14 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [runAuditModalOpen, setRunAuditModalOpen] = useState(false);
   const [selectedClusterId, setSelectedClusterId] = useState<string>('');
+  const [customBackendInput, setCustomBackendInput] = useState<string>('');
+  const [isTestingBackend, setIsTestingBackend] = useState(false);
+  const [connectMsg, setConnectMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [retrying, setRetrying] = useState(false);
+
+  useEffect(() => {
+    setCustomBackendInput(getBackendUrl());
+  }, []);
 
   const fetchSummary = async () => {
     setLoading(true);
@@ -55,14 +122,50 @@ export default function DashboardPage() {
       setError(err?.message || 'Unable to connect to the backend audit service.');
     } finally {
       setLoading(false);
+      setRetrying(false);
     }
+  };
+
+  const handleRetry = async () => {
+    setRetrying(true);
+    await fetchSummary();
+  };
+
+  const handleSaveAndConnect = async () => {
+    if (!customBackendInput.trim()) {
+      setConnectMsg({ type: 'error', text: 'Please enter a valid Render backend URL (e.g. https://k8s-secret-audit.onrender.com)' });
+      return;
+    }
+    setIsTestingBackend(true);
+    setConnectMsg(null);
+    try {
+      const health = await api.checkHealth(customBackendInput.trim());
+      setBackendUrl(customBackendInput.trim());
+      setConnectMsg({ type: 'success', text: `Connected! Service: ${health.service || 'Sentinel API'} (Database: ${health.database?.status || 'connected'})` });
+      setTimeout(() => {
+        fetchSummary();
+      }, 600);
+    } catch (err: any) {
+      setConnectMsg({
+        type: 'error',
+        text: `Health probe failed: ${err.message}. If the Render instance is waking up, wait 30 seconds and retry.`
+      });
+    } finally {
+      setIsTestingBackend(false);
+    }
+  };
+
+  const handleLoadDemoSimulation = () => {
+    setSummary(DEMO_FALLBACK_SUMMARY);
+    setSelectedClusterId('demo-cluster-prod');
+    setError(null);
   };
 
   useEffect(() => {
     fetchSummary();
   }, []);
 
-  if (loading) {
+  if (loading && !retrying) {
     return (
       <div className="flex h-96 flex-col items-center justify-center gap-3">
         <div className="h-10 w-10 animate-spin rounded-full border-4 border-cyan-500 border-t-transparent glow-cyan" />
@@ -72,26 +175,94 @@ export default function DashboardPage() {
   }
 
   if (error && !summary) {
+    const currentTarget = getApiBaseUrl() || 'Not Configured (Missing NEXT_PUBLIC_API_URL)';
     return (
       <div className="space-y-6">
         <div className="flex items-center gap-2 border-b border-slate-800/80 pb-5">
           <h1 className="text-2xl font-black tracking-tight text-white">SOC Security Overview</h1>
         </div>
 
-        <div className="rounded-xl border border-red-500/30 bg-red-950/40 p-6 backdrop-blur-xl">
+        <div className="rounded-xl border border-red-500/40 bg-gradient-to-b from-red-950/60 to-slate-950 p-6 backdrop-blur-xl shadow-2xl space-y-6">
           <div className="flex items-start gap-3">
-            <AlertOctagon className="h-6 w-6 text-red-400 shrink-0 mt-0.5" />
-            <div className="space-y-2">
-              <h3 className="text-sm font-bold text-red-200">Backend API Connection Unavailable</h3>
-              <p className="text-xs text-slate-300 leading-relaxed font-mono">
+            <AlertOctagon className="h-6 w-6 text-red-400 shrink-0 mt-1" />
+            <div className="space-y-2 flex-1">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-bold text-red-200">Backend API Connection Unavailable</h3>
+                <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-red-950 text-red-400 border border-red-800/50">
+                  Target: {currentTarget}
+                </span>
+              </div>
+              <p className="text-xs text-red-300/90 leading-relaxed font-mono bg-black/40 p-3 rounded-lg border border-red-900/30">
                 {error}
               </p>
-              <p className="text-xs text-slate-400">
-                Ensure the FastAPI backend on Render is deployed, healthy, and reachable. If deployed on Vercel, verify that the <code className="text-cyan-400 font-mono">NEXT_PUBLIC_API_URL</code> environment variable points to your Render backend URL.
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 border-t border-slate-800/80 pt-4">
+            {/* Live Backend Connection Input */}
+            <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+              <div className="flex items-center gap-2 text-xs font-bold text-cyan-300">
+                <Globe className="h-4 w-4 text-cyan-400" />
+                <span>Connect Live Render Backend URL</span>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                Enter your deployed Render web service URL to link the frontend immediately:
               </p>
-              <div className="pt-2">
-                <Button onClick={fetchSummary} size="sm" className="gap-2 bg-red-600 hover:bg-red-500 text-white text-xs font-mono">
-                  Retry Connection
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  placeholder="https://your-service.onrender.com"
+                  value={customBackendInput}
+                  onChange={(e) => setCustomBackendInput(e.target.value)}
+                  className="flex-1 rounded-md border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs text-white placeholder-slate-600 focus:border-cyan-500 focus:outline-none font-mono"
+                />
+                <Button
+                  onClick={handleSaveAndConnect}
+                  disabled={isTestingBackend}
+                  size="sm"
+                  className="bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-xs"
+                >
+                  {isTestingBackend ? (
+                    <RotateCw className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    'Connect'
+                  )}
+                </Button>
+              </div>
+              {connectMsg && (
+                <div className={`p-2 rounded text-[11px] font-mono ${connectMsg.type === 'success' ? 'bg-emerald-950/80 border border-emerald-500/30 text-emerald-300' : 'bg-red-950/80 border border-red-500/30 text-red-300'}`}>
+                  {connectMsg.text}
+                </div>
+              )}
+            </div>
+
+            {/* Diagnostic & Fallback Actions */}
+            <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-300">
+                <Sparkles className="h-4 w-4 text-amber-400" />
+                <span>Simulation & Diagnostics</span>
+              </div>
+              <p className="text-[11px] text-slate-400">
+                Explore the complete SOC dashboard UI with simulated Kubernetes security posture or retry the configured endpoint:
+              </p>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <Button
+                  onClick={handleRetry}
+                  disabled={retrying}
+                  size="sm"
+                  variant="outline"
+                  className="gap-2 border-slate-700 hover:bg-slate-800 text-xs text-slate-200 font-mono"
+                >
+                  <RotateCw className={`h-3.5 w-3.5 ${retrying ? 'animate-spin' : ''}`} />
+                  {retrying ? 'Retrying...' : 'Retry Connection'}
+                </Button>
+                <Button
+                  onClick={handleLoadDemoSimulation}
+                  size="sm"
+                  className="gap-2 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs font-mono"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Explore Demo Mode
                 </Button>
               </div>
             </div>
