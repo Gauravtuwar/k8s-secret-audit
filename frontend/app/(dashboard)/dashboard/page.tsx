@@ -37,18 +37,22 @@ import {
 export default function DashboardPage() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [runAuditModalOpen, setRunAuditModalOpen] = useState(false);
   const [selectedClusterId, setSelectedClusterId] = useState<string>('');
 
   const fetchSummary = async () => {
+    setLoading(true);
+    setError(null);
     try {
       const data = await api.getDashboardSummary();
       setSummary(data);
       if (data.recent_audits && data.recent_audits.length > 0) {
         setSelectedClusterId(data.recent_audits[0].cluster_id);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to load dashboard summary:', err);
+      setError(err?.message || 'Unable to connect to the backend audit service.');
     } finally {
       setLoading(false);
     }
@@ -63,6 +67,36 @@ export default function DashboardPage() {
       <div className="flex h-96 flex-col items-center justify-center gap-3">
         <div className="h-10 w-10 animate-spin rounded-full border-4 border-cyan-500 border-t-transparent glow-cyan" />
         <span className="text-xs font-bold text-slate-300">Loading Sentinel Security Dashboard...</span>
+      </div>
+    );
+  }
+
+  if (error && !summary) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-2 border-b border-slate-800/80 pb-5">
+          <h1 className="text-2xl font-black tracking-tight text-white">SOC Security Overview</h1>
+        </div>
+
+        <div className="rounded-xl border border-red-500/30 bg-red-950/40 p-6 backdrop-blur-xl">
+          <div className="flex items-start gap-3">
+            <AlertOctagon className="h-6 w-6 text-red-400 shrink-0 mt-0.5" />
+            <div className="space-y-2">
+              <h3 className="text-sm font-bold text-red-200">Backend API Connection Unavailable</h3>
+              <p className="text-xs text-slate-300 leading-relaxed font-mono">
+                {error}
+              </p>
+              <p className="text-xs text-slate-400">
+                Ensure the FastAPI backend on Render is deployed, healthy, and reachable. If deployed on Vercel, verify that the <code className="text-cyan-400 font-mono">NEXT_PUBLIC_API_URL</code> environment variable points to your Render backend URL.
+              </p>
+              <div className="pt-2">
+                <Button onClick={fetchSummary} size="sm" className="gap-2 bg-red-600 hover:bg-red-500 text-white text-xs font-mono">
+                  Retry Connection
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }

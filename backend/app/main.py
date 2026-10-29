@@ -1,17 +1,30 @@
+import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.core.db import engine, Base
+from app.core.db import init_db
 from app.api import auth, clusters, audits, findings, secrets, encryption, reports, dashboard, health
 
-# Create database tables automatically on startup
-Base.metadata.create_all(bind=engine)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger("k8s_audit.main")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Starting up Kubernetes Secret Audit Tool backend...")
+    init_db()
+    yield
+    logger.info("Shutting down backend...")
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     docs_url=f"{settings.API_V1_STR}/docs",
-    redoc_url=f"{settings.API_V1_STR}/redoc"
+    redoc_url=f"{settings.API_V1_STR}/redoc",
+    lifespan=lifespan
 )
 
 # CORS middleware
@@ -19,8 +32,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"]
 )
 
 # Include Routers
@@ -39,5 +53,6 @@ def root():
     return {
         "app": settings.PROJECT_NAME,
         "docs": f"{settings.API_V1_STR}/docs",
+        "health": "/health",
         "status": "online"
     }

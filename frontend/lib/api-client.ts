@@ -1,6 +1,24 @@
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
+export function getApiBaseUrl(): string {
+  let url = process.env.NEXT_PUBLIC_API_URL;
+  if (!url) {
+    if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      return '/api/v1';
+    }
+    return 'http://localhost:8000/api/v1';
+  }
 
-class ApiError extends Error {
+  // Strip trailing slashes
+  url = url.replace(/\/+$/, '');
+
+  // Normalize /api/v1 suffix
+  if (!url.endsWith('/api/v1')) {
+    url = `${url}/api/v1`;
+  }
+
+  return url;
+}
+
+export class ApiError extends Error {
   status: number;
   data: any;
 
@@ -12,6 +30,7 @@ class ApiError extends Error {
 }
 
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const baseUrl = getApiBaseUrl();
   const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null;
 
   const headers: Record<string, string> = {
@@ -23,17 +42,28 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${BASE_URL}${endpoint}`, {
-    ...options,
-    headers,
-  });
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}${cleanEndpoint}`, {
+      ...options,
+      headers,
+    });
+  } catch (netErr: any) {
+    throw new ApiError(
+      'Unable to connect to the Security Audit API. Verify backend service status and CORS configuration.',
+      0,
+      { originalError: netErr?.message }
+    );
+  }
 
   if (!response.ok) {
     let errorData: any = {};
     try {
       errorData = await response.json();
     } catch (e) {
-      errorData = { detail: response.statusText };
+      errorData = { detail: response.statusText || 'API request failed' };
     }
     throw new ApiError(errorData.detail || 'API request failed', response.status, errorData);
   }
@@ -47,6 +77,12 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 }
 
 export const api = {
+  // Health
+  checkHealth: () => {
+    const base = getApiBaseUrl().replace(/\/api\/v1$/, '');
+    return fetch(`${base}/health`).then((res) => res.json());
+  },
+
   // Auth
   register: (data: any) => request<any>('/auth/register', { method: 'POST', body: JSON.stringify(data) }),
   login: (data: any) => request<any>('/auth/login', { method: 'POST', body: JSON.stringify(data) }),
@@ -90,7 +126,7 @@ export const api = {
   createReport: (audit_id: string, format: string = 'pdf') =>
     request<any>('/reports', { method: 'POST', body: JSON.stringify({ audit_id, format }) }),
   listReports: () => request<any[]>('/reports'),
-  getReportDownloadUrl: (id: string) => `${BASE_URL}/reports/${id}/download`,
+  getReportDownloadUrl: (id: string) => `${getApiBaseUrl()}/reports/${id}/download`,
 
   // Dashboard
   getDashboardSummary: () => request<any>('/dashboard/summary'),
