@@ -159,9 +159,22 @@ export default function DashboardPage() {
     fetchSummary();
   }, []);
 
-  const scoreRating = summary?.security_score && summary.security_score >= 90 ? 'Excellent' :
-    summary?.security_score && summary.security_score >= 75 ? 'Good' :
-    summary?.security_score && summary.security_score >= 50 ? 'Needs Improvement' : 'Critical Risk';
+  const hasAuditResults = Boolean(
+    summary?.recent_audits &&
+    summary.recent_audits.length > 0 &&
+    (summary.total_secrets_audited > 0 || (summary.security_score != null && summary.security_score > 0))
+  );
+
+  const score = summary?.security_score;
+  const scoreRating = !hasAuditResults || score == null
+    ? 'Not assessed'
+    : score >= 90
+    ? 'Excellent'
+    : score >= 75
+    ? 'Good'
+    : score >= 50
+    ? 'Needs Improvement'
+    : 'Critical Risk';
 
   return (
     <div className="space-y-6">
@@ -265,46 +278,68 @@ export default function DashboardPage() {
               <span className="text-xs font-bold uppercase tracking-widest text-cyan-400 flex items-center gap-1.5">
                 <ShieldAlert className="h-4 w-4" /> 2. Cluster Security Score
               </span>
-              <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+              <span className={`text-[10px] font-extrabold uppercase px-2 py-0.5 rounded border ${
+                scoreRating === 'Not assessed'
+                  ? 'bg-slate-800 text-slate-400 border-slate-700'
+                  : scoreRating === 'Excellent'
+                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                  : scoreRating === 'Good'
+                  ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30'
+                  : scoreRating === 'Needs Improvement'
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                  : 'bg-red-500/20 text-red-300 border-red-500/30'
+              }`}>
                 {scoreRating}
               </span>
             </div>
 
             <div className="flex items-baseline gap-2">
               <span className="text-5xl font-black tracking-tight text-white">
-                <AnimatedCounter value={summary?.security_score || 0} decimals={1} />
+                {hasAuditResults && score != null ? (
+                  <AnimatedCounter value={score} decimals={1} />
+                ) : (
+                  '--'
+                )}
               </span>
               <span className="text-sm font-semibold text-slate-400">/ 100</span>
             </div>
 
             <p className="text-xs text-slate-300 leading-relaxed">
-              Calculated based on active KSA rule violations, RBAC verb exposure, and etcd EncryptionConfiguration status.
+              {hasAuditResults
+                ? 'Calculated based on active KSA rule violations, RBAC verb exposure, and etcd EncryptionConfiguration status.'
+                : 'No cluster audits executed yet. Run an audit or connect a live Kubernetes cluster to calculate score.'}
             </p>
           </div>
 
           <div className="mt-6 border-t border-slate-800/80 pt-4 flex items-center justify-between text-xs">
             <div className="flex items-center gap-1.5 font-bold">
-              {(summary?.score_change || 0) >= 0 ? (
-                <span className="flex items-center gap-1 text-emerald-400">
-                  <TrendingUp className="h-4 w-4" /> +{summary?.score_change}
-                </span>
+              {hasAuditResults && summary?.score_change != null ? (
+                summary.score_change >= 0 ? (
+                  <span className="flex items-center gap-1 text-emerald-400">
+                    <TrendingUp className="h-4 w-4" /> +{summary.score_change}
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1 text-red-400">
+                    <TrendingDown className="h-4 w-4" /> {summary.score_change}
+                  </span>
+                )
               ) : (
-                <span className="flex items-center gap-1 text-red-400">
-                  <TrendingDown className="h-4 w-4" /> {summary?.score_change}
-                </span>
+                <span className="text-slate-500 text-[11px] font-mono">No previous scan</span>
               )}
-              <span className="text-slate-500 text-[10px]">vs last audit</span>
+              {hasAuditResults && summary?.score_change != null && (
+                <span className="text-slate-500 text-[10px]">vs last audit</span>
+              )}
             </div>
 
             <span className="text-[11px] text-slate-400 font-mono">
-              Last Scan: {formatDate(summary?.last_audit_at)}
+              Last Scan: {summary?.last_audit_at ? formatDate(summary.last_audit_at) : 'Never'}
             </span>
           </div>
         </div>
 
         {/* 3D Security Canvas Visualizer */}
         <div className="lg:col-span-2">
-          <Security3DNodeCanvas score={summary?.security_score || 85} />
+          <Security3DNodeCanvas score={hasAuditResults && score != null ? score : 85} />
         </div>
       </div>
 
