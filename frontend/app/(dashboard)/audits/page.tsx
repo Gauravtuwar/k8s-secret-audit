@@ -12,19 +12,42 @@ import { formatDate } from '@/lib/utils';
 import { FileSearch, Play, CheckCircle2, Clock, AlertCircle, ArrowRight } from 'lucide-react';
 import { AuditProgressModal } from '@/components/audit/audit-progress-modal';
 
+const DEMO_AUDITS: Audit[] = [
+  {
+    id: 'demo-audit-001',
+    user_id: 'demo-user',
+    cluster_id: 'demo-cluster-prod',
+    started_at: new Date().toISOString(),
+    completed_at: new Date().toISOString(),
+    status: 'completed',
+    current_step: 'Completed',
+    security_score: 82.5,
+    critical_count: 3,
+    high_count: 7,
+    medium_count: 5,
+    low_count: 2,
+    informational_count: 4,
+    total_secrets_audited: 42,
+    is_demo: true
+  }
+];
+
 export default function AuditsPage() {
-  const [audits, setAudits] = useState<Audit[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [audits, setAudits] = useState<Audit[]>(DEMO_AUDITS);
+  const [loading, setLoading] = useState(false);
   const [auditModalOpen, setAuditModalOpen] = useState(false);
-  const [selectedClusterId, setSelectedClusterId] = useState<string>('');
+  const [selectedClusterId, setSelectedClusterId] = useState<string>('demo-cluster-prod');
 
   const fetchAudits = async () => {
     try {
       const data = await api.listAudits();
-      setAudits(data);
-      if (data.length > 0) setSelectedClusterId(data[0].cluster_id);
+      if (data && data.length > 0) {
+        setAudits(data);
+        setSelectedClusterId(data[0].cluster_id);
+      }
     } catch (err) {
-      console.error('Failed to list audits:', err);
+      console.warn('Backend unavailable, using demo audits:', err);
+      setAudits(DEMO_AUDITS);
     } finally {
       setLoading(false);
     }

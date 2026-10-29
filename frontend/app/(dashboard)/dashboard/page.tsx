@@ -94,11 +94,11 @@ const DEMO_FALLBACK_SUMMARY: DashboardSummary = {
 };
 
 export default function DashboardPage() {
-  const [summary, setSummary] = useState<DashboardSummary | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [summary, setSummary] = useState<DashboardSummary>(DEMO_FALLBACK_SUMMARY);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [runAuditModalOpen, setRunAuditModalOpen] = useState(false);
-  const [selectedClusterId, setSelectedClusterId] = useState<string>('');
+  const [selectedClusterId, setSelectedClusterId] = useState<string>('demo-cluster-prod');
   const [customBackendInput, setCustomBackendInput] = useState<string>('');
   const [isTestingBackend, setIsTestingBackend] = useState(false);
   const [connectMsg, setConnectMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -109,17 +109,18 @@ export default function DashboardPage() {
   }, []);
 
   const fetchSummary = async () => {
-    setLoading(true);
-    setError(null);
+    setRetrying(true);
     try {
       const data = await api.getDashboardSummary();
       setSummary(data);
       if (data.recent_audits && data.recent_audits.length > 0) {
         setSelectedClusterId(data.recent_audits[0].cluster_id);
       }
+      setError(null);
     } catch (err: any) {
-      console.error('Failed to load dashboard summary:', err);
-      setError(err?.message || 'Unable to connect to the backend audit service.');
+      console.warn('Backend unavailable, operating in Sentinel Demo Mode:', err);
+      // Keep rich demo fallback active so the dashboard is 100% functional
+      setError(err?.message || 'Backend API offline');
     } finally {
       setLoading(false);
       setRetrying(false);
@@ -127,7 +128,6 @@ export default function DashboardPage() {
   };
 
   const handleRetry = async () => {
-    setRetrying(true);
     await fetchSummary();
   };
 
@@ -155,129 +155,73 @@ export default function DashboardPage() {
     }
   };
 
-  const handleLoadDemoSimulation = () => {
-    setSummary(DEMO_FALLBACK_SUMMARY);
-    setSelectedClusterId('demo-cluster-prod');
-    setError(null);
-  };
-
   useEffect(() => {
     fetchSummary();
   }, []);
-
-  if (loading && !retrying) {
-    return (
-      <div className="flex h-96 flex-col items-center justify-center gap-3">
-        <div className="h-10 w-10 animate-spin rounded-full border-4 border-cyan-500 border-t-transparent glow-cyan" />
-        <span className="text-xs font-bold text-slate-300">Loading Sentinel Security Dashboard...</span>
-      </div>
-    );
-  }
-
-  if (error && !summary) {
-    const currentTarget = getApiBaseUrl() || 'Not Configured (Missing NEXT_PUBLIC_API_URL)';
-    return (
-      <div className="space-y-6">
-        <div className="flex items-center gap-2 border-b border-slate-800/80 pb-5">
-          <h1 className="text-2xl font-black tracking-tight text-white">SOC Security Overview</h1>
-        </div>
-
-        <div className="rounded-xl border border-red-500/40 bg-gradient-to-b from-red-950/60 to-slate-950 p-6 backdrop-blur-xl shadow-2xl space-y-6">
-          <div className="flex items-start gap-3">
-            <AlertOctagon className="h-6 w-6 text-red-400 shrink-0 mt-1" />
-            <div className="space-y-2 flex-1">
-              <div className="flex items-center justify-between">
-                <h3 className="text-base font-bold text-red-200">Backend API Connection Unavailable</h3>
-                <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-red-950 text-red-400 border border-red-800/50">
-                  Target: {currentTarget}
-                </span>
-              </div>
-              <p className="text-xs text-red-300/90 leading-relaxed font-mono bg-black/40 p-3 rounded-lg border border-red-900/30">
-                {error}
-              </p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 border-t border-slate-800/80 pt-4">
-            {/* Live Backend Connection Input */}
-            <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-              <div className="flex items-center gap-2 text-xs font-bold text-cyan-300">
-                <Globe className="h-4 w-4 text-cyan-400" />
-                <span>Connect Live Render Backend URL</span>
-              </div>
-              <p className="text-[11px] text-slate-400">
-                Enter your deployed Render web service URL to link the frontend immediately:
-              </p>
-              <div className="flex gap-2">
-                <input
-                  type="url"
-                  placeholder="https://your-service.onrender.com"
-                  value={customBackendInput}
-                  onChange={(e) => setCustomBackendInput(e.target.value)}
-                  className="flex-1 rounded-md border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs text-white placeholder-slate-600 focus:border-cyan-500 focus:outline-none font-mono"
-                />
-                <Button
-                  onClick={handleSaveAndConnect}
-                  disabled={isTestingBackend}
-                  size="sm"
-                  className="bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-xs"
-                >
-                  {isTestingBackend ? (
-                    <RotateCw className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    'Connect'
-                  )}
-                </Button>
-              </div>
-              {connectMsg && (
-                <div className={`p-2 rounded text-[11px] font-mono ${connectMsg.type === 'success' ? 'bg-emerald-950/80 border border-emerald-500/30 text-emerald-300' : 'bg-red-950/80 border border-red-500/30 text-red-300'}`}>
-                  {connectMsg.text}
-                </div>
-              )}
-            </div>
-
-            {/* Diagnostic & Fallback Actions */}
-            <div className="space-y-3 rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-              <div className="flex items-center gap-2 text-xs font-bold text-slate-300">
-                <Sparkles className="h-4 w-4 text-amber-400" />
-                <span>Simulation & Diagnostics</span>
-              </div>
-              <p className="text-[11px] text-slate-400">
-                Explore the complete SOC dashboard UI with simulated Kubernetes security posture or retry the configured endpoint:
-              </p>
-              <div className="flex flex-wrap gap-2 pt-1">
-                <Button
-                  onClick={handleRetry}
-                  disabled={retrying}
-                  size="sm"
-                  variant="outline"
-                  className="gap-2 border-slate-700 hover:bg-slate-800 text-xs text-slate-200 font-mono"
-                >
-                  <RotateCw className={`h-3.5 w-3.5 ${retrying ? 'animate-spin' : ''}`} />
-                  {retrying ? 'Retrying...' : 'Retry Connection'}
-                </Button>
-                <Button
-                  onClick={handleLoadDemoSimulation}
-                  size="sm"
-                  className="gap-2 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs font-mono"
-                >
-                  <Sparkles className="h-3.5 w-3.5" />
-                  Explore Demo Mode
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   const scoreRating = summary?.security_score && summary.security_score >= 90 ? 'Excellent' :
     summary?.security_score && summary.security_score >= 75 ? 'Good' :
     summary?.security_score && summary.security_score >= 50 ? 'Needs Improvement' : 'Critical Risk';
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
+      {/* Simulation / Backend Status Bar */}
+      {error && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-950/20 p-4 text-xs text-amber-200 backdrop-blur-xl space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/40">
+                <Sparkles className="h-4 w-4" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-amber-300">Sentinel Simulation Mode</span>
+                  <Badge variant="outline" className="border-amber-500/40 text-amber-300 text-[10px]">
+                    Kubernetes Synthetic Data
+                  </Badge>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Render backend not connected. All dashboard modules, KSA rules, and audit features are fully interactive.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="url"
+                placeholder="https://your-service.onrender.com"
+                value={customBackendInput}
+                onChange={(e) => setCustomBackendInput(e.target.value)}
+                className="rounded-md border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs text-white placeholder-slate-600 focus:border-cyan-500 focus:outline-none font-mono min-w-[240px]"
+              />
+              <Button
+                onClick={handleSaveAndConnect}
+                disabled={isTestingBackend}
+                size="sm"
+                className="bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-xs font-mono"
+              >
+                {isTestingBackend ? <RotateCw className="h-3 w-3 animate-spin" /> : 'Connect Live API'}
+              </Button>
+              <Button
+                onClick={handleRetry}
+                disabled={retrying}
+                size="sm"
+                variant="outline"
+                className="border-slate-800 text-slate-300 hover:bg-slate-900 text-xs font-mono"
+                title="Retry Live Backend Ping"
+              >
+                <RotateCw className={`h-3 w-3 ${retrying ? 'animate-spin' : ''}`} />
+              </Button>
+            </div>
+          </div>
+          {connectMsg && (
+            <div className={`p-2 rounded text-[11px] font-mono ${connectMsg.type === 'success' ? 'bg-emerald-950/80 border border-emerald-500/30 text-emerald-300' : 'bg-red-950/80 border border-red-500/30 text-red-300'}`}>
+              {connectMsg.text}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 1. Security Overview Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-5">
         <div>

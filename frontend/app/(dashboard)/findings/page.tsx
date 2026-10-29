@@ -12,9 +12,80 @@ import { getSeverityBadgeColor, getStatusBadgeColor, formatDate } from '@/lib/ut
 import { Search, Filter, AlertTriangle } from 'lucide-react';
 import { FindingDetailsModal } from '@/components/audit/finding-details-modal';
 
+const DEMO_FINDINGS: Finding[] = [
+  {
+    id: 'finding-001',
+    audit_id: 'demo-audit-001',
+    cluster_id: 'demo-cluster-prod',
+    rule_id: 'KSA-001',
+    title: 'Plaintext Secret Injected in Pod Environment Variable',
+    description: 'Workload "payment-processor" mounts database credentials directly via envFrom rather than a safe file volume.',
+    severity: 'Critical',
+    category: 'Workload Configuration',
+    namespace: 'production',
+    resource_type: 'Pod',
+    resource_name: 'payment-processor-79fb488f5c-8z2d1',
+    status: 'Open',
+    recommendation: 'Mount Secret keys as volume projections with read-only file mode 0400 instead of environment variables.',
+    first_detected: new Date().toISOString(),
+    last_detected: new Date().toISOString()
+  },
+  {
+    id: 'finding-002',
+    audit_id: 'demo-audit-001',
+    cluster_id: 'demo-cluster-prod',
+    rule_id: 'KSA-002',
+    title: 'Wildcard Secret RBAC Access (*.*)',
+    description: 'ClusterRole "ci-cd-deployer" has wildcard verb access ["*"] on resources ["secrets"].',
+    severity: 'Critical',
+    category: 'RBAC Authorization',
+    namespace: 'kube-system',
+    resource_type: 'ClusterRole',
+    resource_name: 'ci-cd-deployer',
+    status: 'Open',
+    recommendation: 'Scope RBAC permissions strictly to specific verbs and use namespace-isolated RoleBindings.',
+    first_detected: new Date().toISOString(),
+    last_detected: new Date().toISOString()
+  },
+  {
+    id: 'finding-003',
+    audit_id: 'demo-audit-001',
+    cluster_id: 'demo-cluster-prod',
+    rule_id: 'KSA-003',
+    title: 'etcd Unencrypted Storage - Identity Fallback',
+    description: 'Control plane EncryptionConfiguration specifies "identity" provider ahead of AES-CBC/KMS.',
+    severity: 'High',
+    category: 'Encryption at Rest',
+    namespace: 'kube-system',
+    resource_type: 'EncryptionConfiguration',
+    resource_name: 'apiserver-encryption-config',
+    status: 'Open',
+    recommendation: 'Order KMS or aescbc providers first in the provider sequence and re-encrypt all secret keys.',
+    first_detected: new Date().toISOString(),
+    last_detected: new Date().toISOString()
+  },
+  {
+    id: 'finding-004',
+    audit_id: 'demo-audit-001',
+    cluster_id: 'demo-cluster-prod',
+    rule_id: 'KSA-004',
+    title: 'Unrotated High-Age Secret Key (> 180 Days)',
+    description: 'Secret "legacy-stripe-signing-secret" has not been rotated in 214 days.',
+    severity: 'Medium',
+    category: 'Secret Lifecycle',
+    namespace: 'production',
+    resource_type: 'Secret',
+    resource_name: 'legacy-stripe-signing-secret',
+    status: 'Acknowledged',
+    recommendation: 'Implement automated secret rotation through HashiCorp Vault or AWS Secrets Manager CSI driver.',
+    first_detected: new Date().toISOString(),
+    last_detected: new Date().toISOString()
+  }
+];
+
 export default function FindingsPage() {
-  const [findings, setFindings] = useState<Finding[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [findings, setFindings] = useState<Finding[]>(DEMO_FINDINGS);
+  const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [severityFilter, setSeverityFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -29,9 +100,24 @@ export default function FindingsPage() {
       if (statusFilter) params.status = statusFilter;
 
       const data = await api.listFindings(params);
-      setFindings(data);
+      if (data && data.length > 0) {
+        setFindings(data);
+      }
     } catch (err) {
-      console.error('Failed to list findings:', err);
+      console.warn('Backend unavailable, using demo findings:', err);
+      // Filter demo findings locally if search/filter applied
+      let filtered = [...DEMO_FINDINGS];
+      if (search) {
+        const s = search.toLowerCase();
+        filtered = filtered.filter(f => f.title.toLowerCase().includes(s) || f.rule_id.toLowerCase().includes(s) || f.resource_name.toLowerCase().includes(s));
+      }
+      if (severityFilter) {
+        filtered = filtered.filter(f => f.severity === severityFilter);
+      }
+      if (statusFilter) {
+        filtered = filtered.filter(f => f.status === statusFilter);
+      }
+      setFindings(filtered);
     } finally {
       setLoading(false);
     }
