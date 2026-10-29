@@ -22,6 +22,7 @@ frontend/out/
 *.sqlite3
 temp_reports/
 .pytest_cache/
+*.tsbuildinfo
 
 # System Files
 .DS_Store
