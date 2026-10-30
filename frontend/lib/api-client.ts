@@ -1,4 +1,4 @@
-export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'failed';
+export type ConnectionState = 'idle' | 'simulation' | 'connecting' | 'connected' | 'failed';
 
 export type ConnectionErrorCode =
   | 'MISSING_URL'
