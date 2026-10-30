@@ -35,6 +35,16 @@ def test_cors_preflight():
     assert response.status_code == 200
     assert response.headers.get("access-control-allow-origin") == "https://k8s-secret-audit.vercel.app"
 
+    res_vite = client.options(
+        "/api/v1/dashboard/summary",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "GET"
+        }
+    )
+    assert res_vite.status_code == 200
+    assert res_vite.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
 def test_invalid_and_expired_token():
     # 1. Invalid token
     res_invalid = client.get(

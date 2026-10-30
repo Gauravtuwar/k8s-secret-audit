@@ -5,22 +5,16 @@ from app.core.db import check_db_connection
 router = APIRouter(tags=["Health"])
 
 @router.get("/health")
-def health_check(response: Response):
+def health_check():
     db_connected, db_msg = check_db_connection()
-    
-    overall_status = "healthy" if db_connected else "degraded"
-    
-    # If database is down, return 503 so load balancers / readiness probes recognize degradation if configured
-    if not db_connected:
-        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-
     return {
-        "status": overall_status,
+        "status": "ok",
         "service": settings.PROJECT_NAME,
         "version": "1.0.0",
         "database": {
             "connected": db_connected,
-            "status": "connected" if db_connected else "unreachable"
+            "status": "connected" if db_connected else "degraded",
+            "message": "Connected" if db_connected else db_msg
         }
     }
 

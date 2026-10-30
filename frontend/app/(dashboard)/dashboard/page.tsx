@@ -2,7 +2,14 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { api, getApiBaseUrl, getBackendUrl, setBackendUrl, isBackendConfigured } from '@/lib/api-client';
+import {
+  api,
+  getBackendUrl,
+  setBackendUrl,
+  validateBackendUrl,
+  ConnectionState,
+  ConnectionErrorCode
+} from '@/lib/api-client';
 import { DashboardSummary } from '@/types';
 import { StatCard } from '@/components/dashboard/stat-card';
 import { AuditCharts } from '@/components/dashboard/audit-charts';
@@ -13,7 +20,7 @@ import { AnimatedCounter } from '@/components/ui/animated-counter';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
-import { formatDate, getSeverityBadgeColor } from '@/lib/utils';
+import { formatDate } from '@/lib/utils';
 import {
   ShieldAlert,
   Server,
@@ -34,7 +41,10 @@ import {
   Activity,
   RotateCw,
   Globe,
-  Sparkles
+  Sparkles,
+  Zap,
+  PowerOff,
+  Radio
 } from 'lucide-react';
 
 const DEMO_FALLBACK_SUMMARY: DashboardSummary = {
@@ -95,69 +105,117 @@ const DEMO_FALLBACK_SUMMARY: DashboardSummary = {
 
 export default function DashboardPage() {
   const [summary, setSummary] = useState<DashboardSummary>(DEMO_FALLBACK_SUMMARY);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionState>('connecting');
+  const [connectingMessage, setConnectingMessage] = useState<string>('Initializing Sentinel...');
+  const [connectionError, setConnectionError] = useState<{ code: string; message: string } | null>(null);
+  const [customBackendInput, setCustomBackendInput] = useState<string>('');
+  const [connectedBackendUrl, setConnectedBackendUrl] = useState<string>('');
+  const [latency, setLatency] = useState<number | null>(null);
   const [runAuditModalOpen, setRunAuditModalOpen] = useState(false);
   const [selectedClusterId, setSelectedClusterId] = useState<string>('demo-cluster-prod');
-  const [customBackendInput, setCustomBackendInput] = useState<string>('');
-  const [isTestingBackend, setIsTestingBackend] = useState(false);
-  const [connectMsg, setConnectMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const [retrying, setRetrying] = useState(false);
 
-  useEffect(() => {
-    setCustomBackendInput(getBackendUrl());
-  }, []);
-
-  const fetchSummary = async () => {
-    setRetrying(true);
-    try {
-      const data = await api.getDashboardSummary();
-      setSummary(data);
-      if (data.recent_audits && data.recent_audits.length > 0) {
-        setSelectedClusterId(data.recent_audits[0].cluster_id);
-      }
-      setError(null);
-    } catch (err: any) {
-      console.warn('Backend unavailable, operating in Sentinel Demo Mode:', err);
-      // Keep rich demo fallback active so the dashboard is 100% functional
-      setError(err?.message || 'Backend API offline');
-    } finally {
-      setLoading(false);
-      setRetrying(false);
-    }
-  };
-
-  const handleRetry = async () => {
-    await fetchSummary();
-  };
-
-  const handleSaveAndConnect = async () => {
-    if (!customBackendInput.trim()) {
-      setConnectMsg({ type: 'error', text: 'Please enter a valid Render backend URL (e.g. https://k8s-secret-audit.onrender.com)' });
+  /**
+   * Perform end-to-end connection check:
+   * 1. Probe GET /health (60s timeout for Render spin-up)
+   * 2. Verify GET /dashboard/summary data retrieval
+   * 3. Switch to Live Mode ONLY if both succeed
+   */
+  const handleConnect = async (urlToConnect?: string) => {
+    const rawTarget = (urlToConnect !== undefined ? urlToConnect : customBackendInput).trim();
+    if (!rawTarget) {
+      setConnectionStatus('failed');
+      setConnectionError({
+        code: 'INVALID_URL',
+        message: 'Please enter a valid Render backend URL (e.g. https://your-service.onrender.com).'
+      });
       return;
     }
-    setIsTestingBackend(true);
-    setConnectMsg(null);
-    try {
-      const health = await api.checkHealth(customBackendInput.trim());
-      setBackendUrl(customBackendInput.trim());
-      setConnectMsg({ type: 'success', text: `Connected! Service: ${health.service || 'Sentinel API'} (Database: ${health.database?.status || 'connected'})` });
-      setTimeout(() => {
-        fetchSummary();
-      }, 600);
-    } catch (err: any) {
-      setConnectMsg({
-        type: 'error',
-        text: `Health probe failed: ${err.message}. If the Render instance is waking up, wait 30 seconds and retry.`
+
+    // Validate URL syntax and enforce HTTPS in production
+    const validation = validateBackendUrl(rawTarget);
+    if (!validation.valid) {
+      setConnectionStatus('failed');
+      setConnectionError({
+        code: 'INVALID_URL',
+        message: validation.error || 'Invalid backend URL format.'
       });
-    } finally {
-      setIsTestingBackend(false);
+      return;
+    }
+
+    setConnectionStatus('connecting');
+    setConnectingMessage('Waking up server, may take up to 60 seconds...');
+    setConnectionError(null);
+
+    try {
+      const result = await api.testConnection(validation.cleanUrl, 60000);
+
+      if (result.success && result.summary) {
+        // Both health check AND dashboard data endpoints succeeded
+        setBackendUrl(validation.cleanUrl);
+        setConnectedBackendUrl(validation.cleanUrl);
+        setCustomBackendInput(validation.cleanUrl);
+        setSummary(result.summary);
+        if (result.summary.recent_audits && result.summary.recent_audits.length > 0) {
+          setSelectedClusterId(result.summary.recent_audits[0].cluster_id);
+        }
+        setConnectionStatus('connected');
+        setConnectingMessage('');
+        setConnectionError(null);
+        if (result.latencyMs) setLatency(result.latencyMs);
+      } else {
+        // Health check passed or failed, but full live data is unavailable
+        setConnectionStatus('failed');
+        setConnectingMessage('');
+        setConnectionError({
+          code: result.errorCode || 'SERVER_ERROR',
+          message: result.error || 'Failed to connect to backend API.'
+        });
+        // Safely activate simulation fallback
+        setSummary(DEMO_FALLBACK_SUMMARY);
+      }
+    } catch (err: any) {
+      setConnectionStatus('failed');
+      setConnectingMessage('');
+      setConnectionError({
+        code: err?.errorCode || 'NETWORK_ERROR',
+        message: err?.message || 'Connection attempt failed.'
+      });
+      setSummary(DEMO_FALLBACK_SUMMARY);
     }
   };
 
+  /**
+   * Automatic connection check on mount:
+   * Inspects localStorage or build-time environment variable,
+   * automatically rechecking the saved URL on application load.
+   */
   useEffect(() => {
-    fetchSummary();
+    const initialUrl = getBackendUrl();
+    setCustomBackendInput(initialUrl);
+
+    if (initialUrl && initialUrl.trim()) {
+      handleConnect(initialUrl.trim());
+    } else {
+      setConnectionStatus('failed');
+      setConnectionError({
+        code: 'INVALID_URL',
+        message: 'No backend API URL configured. Enter your Render service URL below or configure NEXT_PUBLIC_API_URL in Vercel.'
+      });
+      setSummary(DEMO_FALLBACK_SUMMARY);
+    }
   }, []);
+
+  const handleDisconnect = () => {
+    setBackendUrl('');
+    setConnectedBackendUrl('');
+    setCustomBackendInput('');
+    setConnectionStatus('failed');
+    setConnectionError({
+      code: 'DISCONNECTED',
+      message: 'Disconnected from live backend. Operating in Sentinel Simulation Mode.'
+    });
+    setSummary(DEMO_FALLBACK_SUMMARY);
+  };
 
   const hasAuditResults = Boolean(
     summary?.recent_audits &&
@@ -178,62 +236,146 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      {/* Simulation / Backend Status Bar */}
-      {error && (
-        <div className="rounded-xl border border-amber-500/30 bg-amber-950/20 p-4 text-xs text-amber-200 backdrop-blur-xl space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* =========================================================================
+          LIVE CONNECTION STATUS / SIMULATION DIAGNOSTIC BAR
+          ========================================================================= */}
+      <div className="rounded-xl border backdrop-blur-xl p-4 transition-all duration-300">
+        {connectionStatus === 'connected' ? (
+          /* State 1: CONNECTED (Live Mode) */
+          <div className="flex flex-wrap items-center justify-between gap-3 text-xs bg-emerald-950/20 border border-emerald-500/30 p-3 rounded-lg text-emerald-200">
             <div className="flex items-center gap-3">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/40">
-                <Sparkles className="h-4 w-4" />
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.2)]">
+                <Radio className="h-4 w-4 animate-pulse" />
               </div>
               <div>
                 <div className="flex items-center gap-2">
-                  <span className="font-bold text-amber-300">Sentinel Simulation Mode</span>
-                  <Badge variant="outline" className="border-amber-500/40 text-amber-300 text-[10px]">
-                    Kubernetes Synthetic Data
+                  <span className="font-bold text-emerald-300">Live Render API Connected</span>
+                  <Badge variant="outline" className="border-emerald-500/40 text-emerald-300 text-[10px] bg-emerald-950/50">
+                    Live Mode Active
                   </Badge>
+                  {latency && (
+                    <span className="text-[10px] font-mono text-emerald-400/80 bg-emerald-900/30 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                      {latency}ms
+                    </span>
+                  )}
                 </div>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  Render backend not connected. All dashboard modules, KSA rules, and audit features are fully interactive.
+                <p className="text-[11px] text-slate-300 mt-0.5 font-mono">
+                  Endpoint: <span className="text-white font-semibold">{connectedBackendUrl}</span> (Database: Connected)
                 </p>
               </div>
             </div>
 
             <div className="flex items-center gap-2">
-              <input
-                type="url"
-                placeholder="https://your-service.onrender.com"
-                value={customBackendInput}
-                onChange={(e) => setCustomBackendInput(e.target.value)}
-                className="rounded-md border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs text-white placeholder-slate-600 focus:border-cyan-500 focus:outline-none font-mono min-w-[240px]"
-              />
               <Button
-                onClick={handleSaveAndConnect}
-                disabled={isTestingBackend}
-                size="sm"
-                className="bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-xs font-mono"
-              >
-                {isTestingBackend ? <RotateCw className="h-3 w-3 animate-spin" /> : 'Connect Live API'}
-              </Button>
-              <Button
-                onClick={handleRetry}
-                disabled={retrying}
+                onClick={() => handleConnect(connectedBackendUrl)}
                 size="sm"
                 variant="outline"
-                className="border-slate-800 text-slate-300 hover:bg-slate-900 text-xs font-mono"
-                title="Retry Live Backend Ping"
+                className="border-emerald-500/40 text-emerald-300 hover:bg-emerald-950/60 text-xs font-mono gap-1"
+                title="Re-verify Health Probe"
               >
-                <RotateCw className={`h-3 w-3 ${retrying ? 'animate-spin' : ''}`} />
+                <RotateCw className="h-3 w-3" /> Recheck
+              </Button>
+              <Button
+                onClick={handleDisconnect}
+                size="sm"
+                variant="outline"
+                className="border-slate-800 text-slate-400 hover:bg-slate-900 hover:text-white text-xs font-mono gap-1"
+                title="Disconnect live backend and use simulation mode"
+              >
+                <PowerOff className="h-3 w-3" /> Disconnect
               </Button>
             </div>
           </div>
-          {connectMsg && (
-            <div className={`p-2 rounded text-[11px] font-mono ${connectMsg.type === 'success' ? 'bg-emerald-950/80 border border-emerald-500/30 text-emerald-300' : 'bg-red-950/80 border border-red-500/30 text-red-300'}`}>
-              {connectMsg.text}
+        ) : connectionStatus === 'connecting' ? (
+          /* State 2: CONNECTING (Waking up server, up to 60s) */
+          <div className="flex flex-wrap items-center justify-between gap-3 text-xs bg-cyan-950/30 border border-cyan-500/30 p-3 rounded-lg text-cyan-200">
+            <div className="flex items-center gap-3">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">
+                <RotateCw className="h-4 w-4 animate-spin text-cyan-400" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-cyan-300">Connecting to Backend API...</span>
+                  <Badge variant="outline" className="border-cyan-500/40 text-cyan-300 text-[10px] animate-pulse">
+                    Connecting
+                  </Badge>
+                </div>
+                <p className="text-[11px] text-cyan-200/90 mt-0.5 font-mono">
+                  {connectingMessage || 'Waking up server, may take up to 60 seconds.'}
+                </p>
+              </div>
             </div>
-          )}
-        </div>
-      )}
+          </div>
+        ) : (
+          /* State 3: FAILED (Simulation Fallback Active) */
+          <div className="space-y-3 bg-amber-950/20 border border-amber-500/30 p-3 rounded-lg text-xs text-amber-200">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-500/20 text-amber-400 border border-amber-500/40">
+                  <Sparkles className="h-4 w-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-amber-300">Sentinel Simulation Mode</span>
+                    <Badge variant="outline" className="border-amber-500/40 text-amber-300 text-[10px]">
+                      Synthetic Data
+                    </Badge>
+                    <Badge variant="destructive" className="text-[10px] uppercase font-bold">
+                      Failed
+                    </Badge>
+                  </div>
+                  <p className="text-[11px] text-slate-300 mt-0.5">
+                    Render backend not connected. All dashboard modules, KSA rules, and audit features are fully interactive in simulation mode.
+                  </p>
+                </div>
+              </div>
+
+              {/* Manual URL Input & Connection Form */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <input
+                  type="url"
+                  placeholder="https://your-service.onrender.com"
+                  value={customBackendInput}
+                  onChange={(e) => setCustomBackendInput(e.target.value)}
+                  className="rounded-md border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs text-white placeholder-slate-600 focus:border-cyan-500 focus:outline-none font-mono min-w-[260px]"
+                />
+                <Button
+                  onClick={() => handleConnect()}
+                  size="sm"
+                  className="bg-cyan-600 hover:bg-cyan-500 text-slate-950 font-bold text-xs font-mono gap-1"
+                >
+                  <Zap className="h-3 w-3 fill-current" /> Connect Live API
+                </Button>
+                <Button
+                  onClick={() => handleConnect()}
+                  size="sm"
+                  variant="outline"
+                  className="border-slate-800 text-slate-300 hover:bg-slate-900 text-xs font-mono"
+                  title="Retry Backend Ping"
+                >
+                  <RotateCw className="h-3 w-3" />
+                </Button>
+              </div>
+            </div>
+
+            {/* Detailed Error Diagnostics Box */}
+            {connectionError && (
+              <div className="p-2.5 rounded bg-red-950/60 border border-red-500/30 text-red-200 text-[11px] font-mono flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 text-red-400 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <div className="font-bold text-red-300 flex items-center gap-1.5">
+                    <span>Connection Diagnostic:</span>
+                    <span className="uppercase text-[10px] px-1.5 py-0.2 rounded bg-red-900/50 border border-red-500/40 text-red-200">
+                      {connectionError.code}
+                    </span>
+                  </div>
+                  <p className="text-red-200/90 leading-relaxed">{connectionError.message}</p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* 1. Security Overview Header */}
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800/80 pb-5">
@@ -398,7 +540,7 @@ export default function DashboardPage() {
             <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-4 space-y-2">
               <div className="flex items-center justify-between text-xs font-bold">
                 <span className="text-slate-200">Active Provider Sequence</span>
-                <Badge variant="warning" className="text-[10px]">identity $\rightarrow$ aescbc</Badge>
+                <Badge variant="warning" className="text-[10px]">identity &rarr; aescbc</Badge>
               </div>
               <p className="text-[11px] text-slate-400 leading-relaxed">
                 Control plane EncryptionConfiguration specifies identity (unencrypted) before cipher providers. etcd writes new secrets in plaintext.
@@ -500,7 +642,7 @@ export default function DashboardPage() {
           open={runAuditModalOpen}
           onOpenChange={(op) => {
             setRunAuditModalOpen(op);
-            if (!op) fetchSummary();
+            if (!op) handleConnect();
           }}
           clusterId={selectedClusterId}
         />

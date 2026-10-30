@@ -189,11 +189,16 @@ npm run dev        # Start development server
 
 ## 11. Verification & Test Execution
 
-Run backend pytest suite:
+### Run backend pytest suite:
 ```bash
+# Windows
 .\venv\Scripts\python.exe -m pytest
+
+# Linux / macOS
+pytest
 ```
-Run frontend type-checking & Next.js production build:
+
+### Run frontend type-checking & Next.js production build:
 ```bash
 cd frontend
 npm run type-check
@@ -202,6 +207,115 @@ npm run build
 
 ---
 
-## 12. License
+## 12. Production Deployment & Backend Connection Guide
+
+### Architecture & Connection Flow
+```
+Vercel Frontend (Next.js 15)  ───HTTPS───>  Render Backend (FastAPI Python)  ───SSL───>  Supabase PostgreSQL (Pooler)
+https://k8s-secret-audit.vercel.app        https://<your-service>.onrender.com         aws-0-<region>.pooler.supabase.com:6543
+```
+
+### A. Local Configuration
+1. **Backend (`backend/.env`):**
+   ```env
+   DATABASE_URL=sqlite:///./k8s_audit.db
+   SECRET_KEY=local-dev-secret-key-32-chars-minimum!
+   CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173
+   PORT=8000
+   ```
+   Start the local backend:
+   ```bash
+   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+   ```
+
+2. **Frontend (`frontend/.env.local`):**
+   ```env
+   NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+   ```
+   Start the local frontend:
+   ```bash
+   npm run dev
+   ```
+
+---
+
+### B. Production Render Backend Configuration
+Create a **Web Service** on Render pointing to your repository:
+- **Root Directory:** `backend`
+- **Runtime:** `Python 3`
+- **Build Command:** `pip install -r requirements.txt`
+- **Start Command:** `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- **Health Check Path:** `/health`
+
+#### Render Environment Variables:
+| Variable | Value / Description | Example |
+| :--- | :--- | :--- |
+| `PYTHON_VERSION` | `3.12.0` | `3.12.0` |
+| `DATABASE_URL` | Supabase IPv4 Transaction Pooler URI | `postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres?sslmode=require` |
+| `SECRET_KEY` | Strong random 32+ character hex string | Generate via Render "Generate" button |
+| `CORS_ORIGINS` | Allowed origins (comma-separated) | `https://k8s-secret-audit.vercel.app,http://localhost:3000,http://localhost:5173` |
+| `PORT` | Auto-populated by Render (default 8000) | `8000` |
+
+---
+
+### C. Production Vercel Frontend Configuration
+1. In your **Vercel Project Settings** $\rightarrow$ **Environment Variables**, add:
+   - **Key:** `NEXT_PUBLIC_API_URL`
+   - **Value:** `https://<YOUR-RENDER-SERVICE-NAME>.onrender.com/api/v1`
+2. **Important:** Trigger a **Redeploy** in Vercel whenever `NEXT_PUBLIC_API_URL` is changed so the client bundle embeds the updated build-time variable.
+3. **Manual Connection:** The dashboard also includes a **Connect Live API** input. Entering your Render service URL saves it to browser `localStorage` and automatically validates connectivity independent of Vercel build-time variables.
+
+---
+
+### D. Testing Endpoints with cURL
+
+#### 1. Test Backend Health Endpoint:
+```bash
+curl -X GET "https://<YOUR-RENDER-SERVICE-NAME>.onrender.com/health" \
+  -H "Accept: application/json"
+```
+**Expected Response (HTTP 200):**
+```json
+{
+  "status": "ok",
+  "service": "Kubernetes Secret Management and Encryption at Rest Audit Tool",
+  "version": "1.0.0",
+  "database": {
+    "connected": true,
+    "status": "connected",
+    "message": "Connected"
+  }
+}
+```
+
+#### 2. Test Dashboard Summary Endpoint:
+```bash
+curl -X GET "https://<YOUR-RENDER-SERVICE-NAME>.onrender.com/api/v1/dashboard/summary" \
+  -H "Accept: application/json"
+```
+**Expected Response (HTTP 200):**
+```json
+{
+  "total_clusters": 1,
+  "total_secrets_audited": 42,
+  "critical_findings": 3,
+  "high_findings": 7,
+  "medium_findings": 5,
+  "low_findings": 2,
+  "encryption_status_summary": {
+    "PASS": 1,
+    "FAIL": 2,
+    "WARNING": 1,
+    "UNKNOWN": 0
+  },
+  "security_score": 82.5,
+  "recent_audits": [...]
+}
+```
+
+---
+
+## 13. License
 
 This project is open source software licensed under the [MIT License](LICENSE).
+

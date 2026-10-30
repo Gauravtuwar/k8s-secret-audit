@@ -21,7 +21,7 @@ def test_health_endpoint_response_structure():
     res = client.get("/health")
     assert res.status_code == 200
     data = res.json()
-    assert data["status"] == "healthy"
+    assert data["status"] in ["ok", "healthy"]
     assert "service" in data
     assert "version" in data
     assert data["database"]["connected"] is True
