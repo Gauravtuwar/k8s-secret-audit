@@ -5,6 +5,8 @@ from app.core.db import check_db_connection
 router = APIRouter(tags=["Health"])
 
 @router.get("/health")
+@router.get("/api/health")
+@router.get("/api/v1/health")
 def health_check():
     db_connected, db_msg = check_db_connection()
     return {

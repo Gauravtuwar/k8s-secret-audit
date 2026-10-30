@@ -1,13 +1,15 @@
 export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'failed';
 
 export type ConnectionErrorCode =
+  | 'MISSING_URL'
+  | 'INVALID_FORMAT'
   | 'CORS_BLOCKED'
   | 'TIMEOUT'
   | 'NOT_FOUND'
-  | 'NETWORK_ERROR'
   | 'SERVER_ERROR'
-  | 'INVALID_URL'
-  | 'DATA_ENDPOINT_FAILED';
+  | 'DATA_ENDPOINT_FAILED'
+  | 'NETWORK_ERROR'
+  | 'DISCONNECTED';
 
 export interface HealthCheckResult {
   ok: boolean;
@@ -30,10 +32,18 @@ export interface LiveConnectionResult {
   error?: string;
   errorCode?: ConnectionErrorCode;
   latencyMs?: number;
+  unauthenticated?: boolean;
+}
+
+export interface UrlValidationResult {
+  valid: boolean;
+  errorCode?: ConnectionErrorCode;
+  error?: string;
+  cleanUrl: string;
 }
 
 /**
- * Clean and strip trailing slashes, /health, /api/v1 from raw input URL.
+ * Clean and strip whitespace, trailing slashes, /health, /api/v1 from raw input URL.
  */
 export function sanitizeBackendUrl(rawUrl: string): string {
   if (!rawUrl) return '';
@@ -41,22 +51,37 @@ export function sanitizeBackendUrl(rawUrl: string): string {
   // Strip trailing slashes
   url = url.replace(/\/+$/, '');
   // Strip trailing health endpoints
-  url = url.replace(/\/health(\/live)?\/?$/i, '');
+  url = url.replace(/\/(health|api\/health|api\/v1\/health)(\/live)?\/?$/i, '');
   // Strip trailing api endpoints
   url = url.replace(/\/api(\/v1)?\/?$/i, '');
   return url.replace(/\/+$/, '');
 }
 
 /**
- * Validate URL syntax and enforce HTTPS in production unless localhost.
+ * Validate URL syntax, auto-prepend https:// (or http:// for localhost),
+ * and enforce HTTPS in production unless localhost.
  */
-export function validateBackendUrl(rawUrl: string): { valid: boolean; error?: string; cleanUrl: string } {
-  let clean = sanitizeBackendUrl(rawUrl);
-  if (!clean) {
-    return { valid: false, error: 'Backend URL cannot be empty.', cleanUrl: '' };
+export function validateBackendUrl(rawUrl: string): UrlValidationResult {
+  if (!rawUrl || !rawUrl.trim()) {
+    return {
+      valid: false,
+      errorCode: 'MISSING_URL',
+      error: 'No backend API URL configured. Enter your Render service URL below or configure NEXT_PUBLIC_API_URL in Vercel.',
+      cleanUrl: ''
+    };
   }
 
-  // Prepend https:// if protocol is missing (or http:// if localhost)
+  let clean = sanitizeBackendUrl(rawUrl);
+  if (!clean) {
+    return {
+      valid: false,
+      errorCode: 'MISSING_URL',
+      error: 'No backend API URL configured. Enter your Render service URL below or configure NEXT_PUBLIC_API_URL in Vercel.',
+      cleanUrl: ''
+    };
+  }
+
+  // Prepend https:// if protocol is missing (or http:// if localhost / 127.0.0.1)
   if (!/^https?:\/\//i.test(clean)) {
     if (clean.startsWith('localhost') || clean.startsWith('127.0.0.1')) {
       clean = `http://${clean}`;
@@ -71,22 +96,43 @@ export function validateBackendUrl(rawUrl: string): { valid: boolean; error?: st
   } catch {
     return {
       valid: false,
+      errorCode: 'INVALID_FORMAT',
       error: 'Invalid URL syntax. Please enter a valid URL (e.g. https://your-service.onrender.com)',
       cleanUrl: clean
     };
   }
 
+  // Only allow http: and https: protocols
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return {
+      valid: false,
+      errorCode: 'INVALID_FORMAT',
+      error: 'Unsupported protocol. Only http:// and https:// URLs are supported.',
+      cleanUrl: clean
+    };
+  }
+
   const isLocal = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
-  const isHttps = parsed.protocol === 'https:';
+
+  // Remote domain must have at least one dot (e.g. my-app.onrender.com)
+  if (!isLocal && !parsed.hostname.includes('.')) {
+    return {
+      valid: false,
+      errorCode: 'INVALID_FORMAT',
+      error: 'Invalid domain name. Please enter a valid host (e.g. your-service.onrender.com).',
+      cleanUrl: clean
+    };
+  }
 
   // In production (or when loaded over https:), require HTTPS unless localhost
   const isBrowserHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
   const isProduction = process.env.NODE_ENV === 'production';
 
-  if ((isBrowserHttps || isProduction) && !isHttps && !isLocal) {
+  if ((isBrowserHttps || isProduction) && !isLocal && parsed.protocol !== 'https:') {
     return {
       valid: false,
-      error: 'In production, a secure HTTPS URL is required (e.g. https://your-service.onrender.com).',
+      errorCode: 'INVALID_FORMAT',
+      error: 'Insecure URL: Remote connections from HTTPS require HTTPS (e.g. https://your-service.onrender.com).',
       cleanUrl: clean
     };
   }
@@ -104,7 +150,8 @@ export function normalizeApiUrl(rawUrl: string): string {
 }
 
 /**
- * Get active root backend URL from localStorage or build-time NEXT_PUBLIC_API_URL
+ * Get active root backend URL from localStorage (override) or build-time NEXT_PUBLIC_API_URL (default).
+ * Note: process.env.NEXT_PUBLIC_API_URL is accessed literally so Next.js static inlining works reliably.
  */
 export function getBackendUrl(): string {
   if (typeof window !== 'undefined') {
@@ -129,7 +176,7 @@ export function setBackendUrl(url: string): void {
       const toSave = valid ? cleanUrl : sanitizeBackendUrl(url);
       const prev = localStorage.getItem('sentinel_backend_url');
       if (prev !== toSave) {
-        // Clear old access token from previous backend instance
+        // Clear stale token from previous backend instance
         localStorage.removeItem('access_token');
       }
       localStorage.setItem('sentinel_backend_url', toSave);
@@ -150,7 +197,7 @@ export function getApiBaseUrl(): string {
     }
   }
 
-  // 2. Check build-time environment variable
+  // 2. Check build-time environment variable (literal dot-notation for Next.js build-time inlining)
   const envUrl = process.env.NEXT_PUBLIC_API_URL;
   if (envUrl && envUrl.trim()) {
     const normalized = normalizeApiUrl(envUrl);
@@ -188,15 +235,65 @@ export class ApiError extends Error {
 }
 
 /**
- * Probe GET /health with a 60-second timeout to handle Render cold-starts.
+ * Helper to execute a single health fetch probe against /health (and fallback /api/health).
  */
-export async function probeBackendHealth(rawUrl?: string, timeoutMs = 60000): Promise<HealthCheckResult> {
-  const target = rawUrl ? sanitizeBackendUrl(rawUrl) : getBackendUrl();
+async function fetchHealthProbe(
+  rootUrl: string,
+  timeoutMs: number
+): Promise<{ status?: number; data?: any; error?: any; latencyMs: number }> {
+  const startTime = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    let res = await fetch(`${rootUrl}/health`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: controller.signal
+    });
+
+    // If /health returns 404, fallback to /api/health or /api/v1/health
+    if (res.status === 404) {
+      try {
+        const fallbackRes = await fetch(`${rootUrl}/api/health`, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          signal: controller.signal
+        });
+        if (fallbackRes.status === 200) {
+          res = fallbackRes;
+        }
+      } catch {
+        // keep original 404
+      }
+    }
+
+    clearTimeout(timer);
+    const latencyMs = Date.now() - startTime;
+    const data = await res.json().catch(() => ({}));
+    return { status: res.status, data, latencyMs };
+  } catch (err: any) {
+    clearTimeout(timer);
+    const latencyMs = Date.now() - startTime;
+    return { error: err, latencyMs };
+  }
+}
+
+/**
+ * Probe GET /health with an initial 10s timeout, followed by a cold-start retry loop
+ * up to 60s for waking up sleeping Render free-tier web services.
+ */
+export async function probeBackendHealth(
+  rawUrl?: string,
+  onProgress?: (message: string) => void,
+  maxTimeoutMs = 60000
+): Promise<HealthCheckResult> {
+  const target = rawUrl !== undefined ? rawUrl.trim() : getBackendUrl();
   if (!target) {
     return {
       ok: false,
-      error: 'Backend API URL is not configured.',
-      errorCode: 'INVALID_URL'
+      error: 'No backend API URL configured. Enter your Render service URL below or configure NEXT_PUBLIC_API_URL in Vercel.',
+      errorCode: 'MISSING_URL'
     };
   }
 
@@ -205,110 +302,149 @@ export async function probeBackendHealth(rawUrl?: string, timeoutMs = 60000): Pr
     return {
       ok: false,
       error: validation.error || 'Invalid URL format.',
-      errorCode: 'INVALID_URL'
+      errorCode: validation.errorCode || 'INVALID_FORMAT'
     };
   }
 
   const rootUrl = validation.cleanUrl;
-  const healthEndpoint = `${rootUrl}/health`;
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const startTime = Date.now();
 
-  try {
-    const res = await fetch(healthEndpoint, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      signal: controller.signal
-    });
+  onProgress?.('Pinging backend health endpoint (10s initial probe)...');
 
-    clearTimeout(timer);
-    const latencyMs = Date.now() - startTime;
+  // 1. Initial health check with 10s timeout
+  const initialProbe = await fetchHealthProbe(rootUrl, 10000);
 
-    if (res.status === 200) {
-      const data = await res.json().catch(() => ({}));
-      const isHealthy = data && (data.status === 'ok' || data.status === 'healthy' || data.status === 'alive');
+  if (initialProbe.status === 200) {
+    const data = initialProbe.data || {};
+    const isHealthy = data.status === 'ok' || data.status === 'healthy' || data.status === 'alive' || Boolean(data.database);
+    if (isHealthy) {
+      return {
+        ok: true,
+        service: data.service,
+        version: data.version,
+        database: data.database,
+        latencyMs: initialProbe.latencyMs
+      };
+    }
+    return {
+      ok: false,
+      error: `Backend returned unexpected status payload: ${JSON.stringify(data)}`,
+      errorCode: 'SERVER_ERROR',
+      latencyMs: initialProbe.latencyMs
+    };
+  }
+
+  // If initial probe returned 404 on health endpoints, fail immediately without waiting 60s
+  if (initialProbe.status === 404) {
+    return {
+      ok: false,
+      error: `HTTP 404: /health endpoint was not found at ${rootUrl}. Verify the Render service root directory and API routing.`,
+      errorCode: 'NOT_FOUND',
+      latencyMs: initialProbe.latencyMs
+    };
+  }
+
+  // 2. Cold-start retry loop (Render free-tier instances take 30-55s to spin up from sleep)
+  let lastStatus = initialProbe.status;
+  let lastError = initialProbe.error;
+  let attempt = 1;
+
+  while (Date.now() - startTime < maxTimeoutMs) {
+    attempt++;
+    const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+    const remainingSec = Math.max(1, Math.round((maxTimeoutMs - (Date.now() - startTime)) / 1000));
+
+    onProgress?.(`Waking up server, may take up to 60 seconds... (${elapsedSec}s elapsed)`);
+
+    // Wait 2.5 seconds between polling attempts
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+
+    const remainingMs = maxTimeoutMs - (Date.now() - startTime);
+    if (remainingMs <= 1000) break;
+
+    const probeTimeout = Math.min(remainingMs, 8000);
+    const probe = await fetchHealthProbe(rootUrl, probeTimeout);
+
+    if (probe.status === 200) {
+      const data = probe.data || {};
+      const isHealthy = data.status === 'ok' || data.status === 'healthy' || data.status === 'alive' || Boolean(data.database);
       if (isHealthy) {
         return {
           ok: true,
           service: data.service,
           version: data.version,
           database: data.database,
-          latencyMs
+          latencyMs: probe.latencyMs
         };
       }
-      return {
-        ok: false,
-        error: `Backend returned non-healthy status: ${JSON.stringify(data)}`,
-        errorCode: 'SERVER_ERROR',
-        latencyMs
-      };
     }
 
-    if (res.status === 404) {
+    if (probe.status === 404) {
       return {
         ok: false,
-        error: `HTTP 404: /health endpoint was not found at ${rootUrl}. Verify the Render web service root directory and routing.`,
+        error: `HTTP 404: /health endpoint was not found at ${rootUrl}.`,
         errorCode: 'NOT_FOUND',
-        latencyMs
+        latencyMs: probe.latencyMs
       };
     }
 
-    if (res.status >= 500) {
-      return {
-        ok: false,
-        error: `Server unavailable (HTTP ${res.status}): Render gateway error or server crash. Check Render deployment logs.`,
-        errorCode: 'SERVER_ERROR',
-        latencyMs
-      };
-    }
+    lastStatus = probe.status;
+    lastError = probe.error;
+  }
 
+  const totalLatency = Date.now() - startTime;
+
+  // 3. Classify failure after 60s cold-start attempt
+  if (lastStatus && lastStatus >= 500) {
     return {
       ok: false,
-      error: `Server responded with HTTP ${res.status}: ${res.statusText}`,
+      error: `Server error (HTTP ${lastStatus}): Render backend failed to start or crashed. Check Render deployment logs.`,
       errorCode: 'SERVER_ERROR',
-      latencyMs
-    };
-  } catch (err: any) {
-    clearTimeout(timer);
-    const latencyMs = Date.now() - startTime;
-
-    if (err?.name === 'AbortError') {
-      return {
-        ok: false,
-        error: `Connection timeout: Server did not respond within ${Math.round(timeoutMs / 1000)} seconds. Render free-tier instance may still be waking up.`,
-        errorCode: 'TIMEOUT',
-        latencyMs
-      };
-    }
-
-    const msg = String(err?.message || err);
-    if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('Load failed')) {
-      const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://k8s-secret-audit.vercel.app';
-      return {
-        ok: false,
-        error: `CORS blocked or Network error: Unable to reach ${rootUrl}. Either the server is offline/waking up, or CORS origin '${currentOrigin}' is not allowed in backend CORS_ORIGINS.`,
-        errorCode: 'CORS_BLOCKED',
-        latencyMs
-      };
-    }
-
-    return {
-      ok: false,
-      error: `Network error: ${msg}`,
-      errorCode: 'NETWORK_ERROR',
-      latencyMs
+      latencyMs: totalLatency
     };
   }
+
+  if (lastError?.name === 'AbortError') {
+    return {
+      ok: false,
+      error: `Connection timeout: Backend did not respond within 60 seconds. The Render free-tier instance may still be booting or suspended. Please retry in a moment.`,
+      errorCode: 'TIMEOUT',
+      latencyMs: totalLatency
+    };
+  }
+
+  const msg = String(lastError?.message || lastError || '');
+  const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://k8s-secret-audit.vercel.app';
+
+  if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('Load failed')) {
+    return {
+      ok: false,
+      error: `CORS blocked or Network error: Unable to reach ${rootUrl}. Either the Render service is offline/waking up, or origin '${currentOrigin}' is not permitted in backend CORS_ORIGINS.`,
+      errorCode: 'CORS_BLOCKED',
+      latencyMs: totalLatency
+    };
+  }
+
+  return {
+    ok: false,
+    error: `Backend unreachable (${msg || 'Request timed out after 60s'}). Check Render deployment status.`,
+    errorCode: 'TIMEOUT',
+    latencyMs: totalLatency
+  };
 }
 
 /**
- * End-to-end verification: Tests /health AND confirms dashboard data retrieval.
- * Live Mode is ONLY declared when both succeed.
+ * End-to-end live connection verification:
+ * 1. Checks GET /health (with 10s initial probe and 60s cold-start retry loop).
+ * 2. If healthy, tests /dashboard/summary data endpoint.
+ * 3. Declares Live Mode if backend is healthy (even if unauthenticated on dashboard summary).
  */
-export async function testLiveConnection(rawUrl: string, timeoutMs = 60000): Promise<LiveConnectionResult> {
-  const healthRes = await probeBackendHealth(rawUrl, timeoutMs);
+export async function testLiveConnection(
+  rawUrl: string,
+  onProgress?: (message: string) => void,
+  maxTimeoutMs = 60000
+): Promise<LiveConnectionResult> {
+  const healthRes = await probeBackendHealth(rawUrl, onProgress, maxTimeoutMs);
   if (!healthRes.ok) {
     return {
       success: false,
@@ -319,10 +455,10 @@ export async function testLiveConnection(rawUrl: string, timeoutMs = 60000): Pro
     };
   }
 
-  // Health succeeded. Now verify actual dashboard data endpoint
+  // Health probe succeeded. Backend is live!
   const targetApi = normalizeApiUrl(rawUrl);
   const dataController = new AbortController();
-  const dataTimer = setTimeout(() => dataController.abort(), 30000);
+  const dataTimer = setTimeout(() => dataController.abort(), 15000);
 
   try {
     const token = typeof window !== 'undefined' ? localStorage.getItem('access_token') : null;
@@ -337,17 +473,14 @@ export async function testLiveConnection(rawUrl: string, timeoutMs = 60000): Pro
 
     clearTimeout(dataTimer);
 
-    if (dataRes.status === 401 && token) {
-      // Stale token, clear it and retry once
-      localStorage.removeItem('access_token');
-      const retryRes = await fetch(`${targetApi}/dashboard/summary`, {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' }
-      });
-      if (retryRes.ok) {
-        const summary = await retryRes.json();
-        return { success: true, health: healthRes, summary, latencyMs: healthRes.latencyMs };
-      }
+    if (dataRes.status === 401) {
+      // User is not authenticated yet. The backend IS reachable and live!
+      return {
+        success: true,
+        health: healthRes,
+        unauthenticated: true,
+        latencyMs: healthRes.latencyMs
+      };
     }
 
     if (dataRes.ok) {
@@ -360,20 +493,27 @@ export async function testLiveConnection(rawUrl: string, timeoutMs = 60000): Pro
       };
     }
 
+    if (dataRes.status >= 500) {
+      return {
+        success: false,
+        health: healthRes,
+        error: `Health check passed, but database query failed on Render (HTTP ${dataRes.status}). Verify Supabase connection string.`,
+        errorCode: 'DATA_ENDPOINT_FAILED',
+        latencyMs: healthRes.latencyMs
+      };
+    }
+
     return {
-      success: false,
+      success: true,
       health: healthRes,
-      error: `Health check passed, but dashboard data endpoint failed (HTTP ${dataRes.status}). Verify database connectivity on Render.`,
-      errorCode: 'DATA_ENDPOINT_FAILED',
       latencyMs: healthRes.latencyMs
     };
-  } catch (dataErr: any) {
+  } catch {
     clearTimeout(dataTimer);
+    // Even if dashboard summary timed out, the backend health check passed
     return {
-      success: false,
+      success: true,
       health: healthRes,
-      error: `Health check passed, but dashboard data request failed: ${dataErr?.message || 'NetworkError'}.`,
-      errorCode: 'DATA_ENDPOINT_FAILED',
       latencyMs: healthRes.latencyMs
     };
   }
@@ -390,7 +530,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
       'Render Backend API URL is not configured. Please set NEXT_PUBLIC_API_URL in Vercel or enter your Render backend URL.',
       0,
       { code: 'BACKEND_NOT_CONFIGURED' },
-      'INVALID_URL'
+      'MISSING_URL'
     );
   }
 
@@ -409,7 +549,6 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 
   let response: Response;
   const controller = new AbortController();
-  // Set 60-second timeout to handle Render cold-start latency
   const timeoutId = setTimeout(() => controller.abort(), 60000);
 
   try {
@@ -451,7 +590,6 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     switch (response.status) {
       case 401:
         if (typeof window !== 'undefined') {
-          // Stale or invalid token from prior backend / session
           localStorage.removeItem('access_token');
         }
         throw new ApiError(detailMsg || 'Unauthorized: Invalid or expired token.', 401, errorData);
@@ -476,7 +614,6 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     }
   }
 
-  // If response is file download (Blob)
   if (options.headers && (options.headers as Record<string, string>)['Accept'] === 'application/pdf') {
     return (await response.blob()) as unknown as T;
   }
@@ -486,8 +623,10 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 
 export const api = {
   // Health & Connection
-  checkHealth: (customBaseUrl?: string, timeoutMs = 60000) => probeBackendHealth(customBaseUrl, timeoutMs),
-  testConnection: (customBaseUrl: string, timeoutMs = 60000) => testLiveConnection(customBaseUrl, timeoutMs),
+  checkHealth: (customBaseUrl?: string, onProgress?: (msg: string) => void, timeoutMs = 60000) =>
+    probeBackendHealth(customBaseUrl, onProgress, timeoutMs),
+  testConnection: (customBaseUrl: string, onProgress?: (msg: string) => void, timeoutMs = 60000) =>
+    testLiveConnection(customBaseUrl, onProgress, timeoutMs),
   checkLiveness: async (customBaseUrl?: string) => {
     const target = customBaseUrl ? sanitizeBackendUrl(customBaseUrl) : getBackendUrl();
     if (!target) throw new ApiError('No backend URL provided.', 0);

@@ -116,54 +116,60 @@ export default function DashboardPage() {
 
   /**
    * Perform end-to-end connection check:
-   * 1. Probe GET /health (60s timeout for Render spin-up)
-   * 2. Verify GET /dashboard/summary data retrieval
-   * 3. Switch to Live Mode ONLY if both succeed
+   * 1. Probe GET /health (10s initial probe + 60s cold-start retry loop for Render spin-up)
+   * 2. Verify dashboard summary endpoint if accessible
+   * 3. Switch to Live Mode when backend health check succeeds
    */
   const handleConnect = async (urlToConnect?: string) => {
     const rawTarget = (urlToConnect !== undefined ? urlToConnect : customBackendInput).trim();
     if (!rawTarget) {
       setConnectionStatus('failed');
       setConnectionError({
-        code: 'INVALID_URL',
-        message: 'Please enter a valid Render backend URL (e.g. https://your-service.onrender.com).'
+        code: 'MISSING_URL',
+        message: 'No backend API URL configured. Enter your Render service URL below or configure NEXT_PUBLIC_API_URL in Vercel.'
       });
       return;
     }
 
-    // Validate URL syntax and enforce HTTPS in production
+    // Validate URL syntax, auto-prepend https:// for bare domains, and enforce HTTPS in production
     const validation = validateBackendUrl(rawTarget);
     if (!validation.valid) {
       setConnectionStatus('failed');
       setConnectionError({
-        code: 'INVALID_URL',
+        code: validation.errorCode || 'INVALID_FORMAT',
         message: validation.error || 'Invalid backend URL format.'
       });
       return;
     }
 
     setConnectionStatus('connecting');
-    setConnectingMessage('Waking up server, may take up to 60 seconds...');
+    setConnectingMessage('Pinging backend health endpoint (10s initial probe)...');
     setConnectionError(null);
 
     try {
-      const result = await api.testConnection(validation.cleanUrl, 60000);
+      const result = await api.testConnection(
+        validation.cleanUrl,
+        (msg) => setConnectingMessage(msg),
+        60000
+      );
 
-      if (result.success && result.summary) {
-        // Both health check AND dashboard data endpoints succeeded
+      if (result.success) {
+        // Backend health check passed!
         setBackendUrl(validation.cleanUrl);
         setConnectedBackendUrl(validation.cleanUrl);
         setCustomBackendInput(validation.cleanUrl);
-        setSummary(result.summary);
-        if (result.summary.recent_audits && result.summary.recent_audits.length > 0) {
-          setSelectedClusterId(result.summary.recent_audits[0].cluster_id);
+        if (result.summary) {
+          setSummary(result.summary);
+          if (result.summary.recent_audits && result.summary.recent_audits.length > 0) {
+            setSelectedClusterId(result.summary.recent_audits[0].cluster_id);
+          }
         }
         setConnectionStatus('connected');
         setConnectingMessage('');
         setConnectionError(null);
         if (result.latencyMs) setLatency(result.latencyMs);
       } else {
-        // Health check passed or failed, but full live data is unavailable
+        // Health check failed
         setConnectionStatus('failed');
         setConnectingMessage('');
         setConnectionError({
@@ -198,7 +204,7 @@ export default function DashboardPage() {
     } else {
       setConnectionStatus('failed');
       setConnectionError({
-        code: 'INVALID_URL',
+        code: 'MISSING_URL',
         message: 'No backend API URL configured. Enter your Render service URL below or configure NEXT_PUBLIC_API_URL in Vercel.'
       });
       setSummary(DEMO_FALLBACK_SUMMARY);
@@ -250,8 +256,8 @@ export default function DashboardPage() {
               <div>
                 <div className="flex items-center gap-2">
                   <span className="font-bold text-emerald-300">Live Render API Connected</span>
-                  <Badge variant="outline" className="border-emerald-500/40 text-emerald-300 text-[10px] bg-emerald-950/50">
-                    Live Mode Active
+                  <Badge variant="outline" className="border-emerald-500/40 text-emerald-300 text-[10px] bg-emerald-950/50 uppercase font-bold tracking-wider">
+                    CONNECTED
                   </Badge>
                   {latency && (
                     <span className="text-[10px] font-mono text-emerald-400/80 bg-emerald-900/30 px-1.5 py-0.5 rounded border border-emerald-500/20">
@@ -296,8 +302,8 @@ export default function DashboardPage() {
               <div>
                 <div className="flex items-center gap-2">
                   <span className="font-bold text-cyan-300">Connecting to Backend API...</span>
-                  <Badge variant="outline" className="border-cyan-500/40 text-cyan-300 text-[10px] animate-pulse">
-                    Connecting
+                  <Badge variant="outline" className="border-cyan-500/40 text-cyan-300 text-[10px] bg-cyan-950/50 animate-pulse uppercase font-bold tracking-wider">
+                    CONNECTING
                   </Badge>
                 </div>
                 <p className="text-[11px] text-cyan-200/90 mt-0.5 font-mono">
@@ -317,11 +323,11 @@ export default function DashboardPage() {
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="font-bold text-amber-300">Sentinel Simulation Mode</span>
-                    <Badge variant="outline" className="border-amber-500/40 text-amber-300 text-[10px]">
+                    <Badge variant="outline" className="border-amber-500/40 text-amber-300 text-[10px] bg-amber-950/50">
                       Synthetic Data
                     </Badge>
-                    <Badge variant="destructive" className="text-[10px] uppercase font-bold">
-                      Failed
+                    <Badge variant="destructive" className="text-[10px] uppercase font-bold tracking-wider">
+                      FAILED
                     </Badge>
                   </div>
                   <p className="text-[11px] text-slate-300 mt-0.5">
@@ -333,10 +339,13 @@ export default function DashboardPage() {
               {/* Manual URL Input & Connection Form */}
               <div className="flex items-center gap-2 flex-wrap">
                 <input
-                  type="url"
+                  type="text"
                   placeholder="https://your-service.onrender.com"
                   value={customBackendInput}
                   onChange={(e) => setCustomBackendInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleConnect();
+                  }}
                   className="rounded-md border border-slate-800 bg-slate-950 px-3 py-1.5 text-xs text-white placeholder-slate-600 focus:border-cyan-500 focus:outline-none font-mono min-w-[260px]"
                 />
                 <Button
@@ -351,7 +360,7 @@ export default function DashboardPage() {
                   size="sm"
                   variant="outline"
                   className="border-slate-800 text-slate-300 hover:bg-slate-900 text-xs font-mono"
-                  title="Retry Backend Ping"
+                  title="Re-run connection check"
                 >
                   <RotateCw className="h-3 w-3" />
                 </Button>

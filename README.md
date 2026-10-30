@@ -261,9 +261,15 @@ Create a **Web Service** on Render pointing to your repository:
 ### C. Production Vercel Frontend Configuration
 1. In your **Vercel Project Settings** $\rightarrow$ **Environment Variables**, add:
    - **Key:** `NEXT_PUBLIC_API_URL`
-   - **Value:** `https://<YOUR-RENDER-SERVICE-NAME>.onrender.com/api/v1`
-2. **Important:** Trigger a **Redeploy** in Vercel whenever `NEXT_PUBLIC_API_URL` is changed so the client bundle embeds the updated build-time variable.
-3. **Manual Connection:** The dashboard also includes a **Connect Live API** input. Entering your Render service URL saves it to browser `localStorage` and automatically validates connectivity independent of Vercel build-time variables.
+   - **Value:** `https://<YOUR-RENDER-SERVICE-NAME>.onrender.com` *(both root domain and `/api/v1` subpath are supported)*
+2. **Important:** Trigger a **Redeploy** in Vercel whenever `NEXT_PUBLIC_API_URL` is configured or modified so the client bundle embeds the updated build-time variable.
+3. **Manual Connection:** The dashboard also includes a **Connect Live API** input that supports:
+   - Bare domains (e.g. `your-service.onrender.com`), auto-prepending `https://`.
+   - Trailing slash and `/health` or `/api/v1` stripping.
+   - Initial 10-second health probe with automated cold-start retry loop up to 60 seconds for Render free-tier spin up.
+   - Persistence in browser `localStorage` on successful connection so reload automatically connects.
+   - Clear diagnostic error codes (`MISSING_URL`, `INVALID_FORMAT`, `CORS_BLOCKED`, `TIMEOUT`, `NOT_FOUND`, `SERVER_ERROR`).
+   - Seamless fallback to Sentinel Simulation Mode when disconnected or offline.
 
 ---
 
